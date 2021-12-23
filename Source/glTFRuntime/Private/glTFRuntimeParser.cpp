@@ -61,6 +61,17 @@ TSharedPtr<FglTFRuntimeParser> FglTFRuntimeParser::FromFilename(const FString& F
 		Parser->BaseDirectory = FPaths::GetPath(TruePath);
 	}
 
+	if (Filename.Contains(TEXT("lod0"), ESearchCase::CaseSensitive, ESearchDir::FromEnd)) {
+		TSharedPtr<FglTFRuntimeParser> Parser2 = FromFilename("Models/lod3.glb", LoaderConfig);
+		if (Parser2) {
+			UE_LOG(LogGLTFRuntime, Error, TEXT("Perfectly able to load file %s"), *Filename);
+			Parser->ChildParsers.Add(Parser2);
+		}
+		else {
+			UE_LOG(LogGLTFRuntime, Error, TEXT("Unable to load file %s as a child parser"), *Filename);
+		}
+	}
+
 	return Parser;
 }
 

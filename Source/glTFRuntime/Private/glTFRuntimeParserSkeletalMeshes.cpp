@@ -1002,10 +1002,11 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshLODs(const TArray<int32> Mesh
 	return nullptr;
 }
 
-USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & NodeName, const int32 SkinIndex, const TArray<FString>&ExcludeNodes, const FglTFRuntimeSkeletalMeshConfig & SkeletalMeshConfig)
+TArray<FglTFRuntimePrimitive> FglTFRuntimeParser::LoadPrimitivesRecursive(const FString& NodeName, int32 &NewSkinIndex, const TArray<FString>& ExcludeNodes, const FglTFRuntimeSkeletalMeshConfig& SkeletalMeshConfig)
 {
 	FglTFRuntimeNode Node;
 	TArray<FglTFRuntimeNode> Nodes;
+	TArray<FglTFRuntimePrimitive> Primitives;
 
 	if (NodeName.IsEmpty())
 	{
@@ -1013,7 +1014,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 		if (!LoadScene(0, Scene))
 		{
 			AddError("LoadSkeletalMeshRecursive()", "No Scene found in asset");
-			return nullptr;
+			return Primitives;
 		}
 
 		for (int32 NodeIndex : Scene.RootNodesIndices)
@@ -1021,7 +1022,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 			if (!LoadNodesRecursive(NodeIndex, Nodes))
 			{
 				AddError("LoadSkeletalMeshRecursive()", "Unable to build Node Tree from first Scene");
-				return nullptr;
+				return Primitives;
 			}
 		}
 	}
@@ -1030,17 +1031,15 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 		if (!LoadNodeByName(NodeName, Node))
 		{
 			AddError("LoadSkeletalMeshRecursive()", FString::Printf(TEXT("Unable to find Node \"%s\""), *NodeName));
-			return nullptr;
+			return Primitives;
 		}
 
 		if (!LoadNodesRecursive(Node.Index, Nodes))
 		{
 			AddError("LoadSkeletalMeshRecursive()", FString::Printf(TEXT("Unable to build Node Tree from \"%s\""), *NodeName));
-			return nullptr;
+			return Primitives;
 		}
 	}
-
-	int32 NewSkinIndex = SkinIndex;
 
 	if (NewSkinIndex <= INDEX_NONE)
 	{
@@ -1061,11 +1060,9 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 		if (NewSkinIndex <= INDEX_NONE)
 		{
 			AddError("LoadSkeletalMeshRecursive()", "Unable to find a valid Skin");
-			return nullptr;
+			return Primitives;
 		}
 	}
-
-	TArray<FglTFRuntimePrimitive> Primitives;
 
 	// now search for all meshes (will be all merged in the same primitives list)
 	for (FglTFRuntimeNode& ChildNode : Nodes)
@@ -1080,7 +1077,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 			if (!JsonMeshObject)
 			{
 				AddError("LoadSkeletalMeshRecursive()", FString::Printf(TEXT("Unable to find Mesh with index %d"), ChildNode.MeshIndex));
-				return nullptr;
+				return Primitives;
 			}
 
 			// keep track of primitives
@@ -1088,7 +1085,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 
 			if (!LoadPrimitives(JsonMeshObject.ToSharedRef(), Primitives, SkeletalMeshConfig.MaterialsConfig))
 			{
-				return nullptr;
+				return Primitives;
 			}
 
 			// if the SkinIndex is different from the selected one,
@@ -1099,7 +1096,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 				if (!JsonSkinObject)
 				{
 					AddError("LoadSkeletalMeshRecursive()", FString::Printf(TEXT("Unable to fill skin %d"), ChildNode.SkinIndex));
-					return nullptr;
+					return Primitives;
 				}
 
 				TMap<int32, FName> BoneMap;
@@ -1108,7 +1105,7 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 				if (!FillReferenceSkeleton(JsonSkinObject.ToSharedRef(), FakeRefSkeleton, BoneMap, SkeletalMeshConfig.SkeletonConfig))
 				{
 					AddError("LoadSkeletalMeshRecursive()", "Unable to fill RefSkeleton.");
-					return nullptr;
+					return Primitives;
 				}
 
 				// apply overrides
@@ -1120,6 +1117,14 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 			}
 		}
 	}
+
+	return Primitives;
+}
+
+USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & NodeName, const int32 SkinIndex, const TArray<FString>&ExcludeNodes, const FglTFRuntimeSkeletalMeshConfig & SkeletalMeshConfig)
+{
+	int32 NewSkinIndex = SkinIndex;
+	TArray<FglTFRuntimePrimitive> Primitives = LoadPrimitivesRecursive(NodeName, NewSkinIndex, ExcludeNodes, SkeletalMeshConfig);
 
 	TArray<FglTFRuntimeLOD> LODs;
 	FglTFRuntimeLOD LOD0;
@@ -1141,6 +1146,16 @@ USkeletalMesh* FglTFRuntimeParser::LoadSkeletalMeshRecursive(const FString & Nod
 void FglTFRuntimeParser::LoadSkeletalMeshRecursiveAsync(const FString & NodeName, const int32 SkinIndex, const TArray<FString>&ExcludeNodes, FglTFRuntimeSkeletalMeshAsync AsyncCallback, const FglTFRuntimeSkeletalMeshConfig & SkeletalMeshConfig)
 {
 	TSharedRef<FglTFRuntimeSkeletalMeshContext, ESPMode::ThreadSafe> SkeletalMeshContext = MakeShared<FglTFRuntimeSkeletalMeshContext, ESPMode::ThreadSafe>(AsShared(), SkeletalMeshConfig);
+
+	if (ChildParsers.Num()) {
+		int32 NSI = SkinIndex;
+		//FglTFRuntimeParser CP = ChildParsers
+		TArray<FglTFRuntimePrimitive> Primitives2 = ChildParsers[0]->LoadPrimitivesRecursive(NodeName, NSI, ExcludeNodes, SkeletalMeshConfig);
+
+		FglTFRuntimeLOD LOD3;
+		LOD3.Primitives = Primitives2;
+		SkeletalMeshContext->LODs.Add(LOD3);
+	}
 
 	Async(EAsyncExecution::Thread, [this, SkeletalMeshContext, ExcludeNodes, NodeName, SkinIndex, AsyncCallback]()
 	{
@@ -1263,13 +1278,16 @@ void FglTFRuntimeParser::LoadSkeletalMeshRecursiveAsync(const FString & NodeName
 			}
 		}
 
-		TArray<FglTFRuntimeLOD> LODs;
+
+
+//		TArray<FglTFRuntimeLOD> LODs;
 		FglTFRuntimeLOD LOD0;
 		LOD0.Primitives = Primitives;
-		LODs.Add(LOD0);
+		//LODs.Add(LOD0);
+		SkeletalMeshContext->LODs.Insert(LOD0, 0);
 
 		SkeletalMeshContext->SkinIndex = NewSkinIndex;
-		SkeletalMeshContext->LODs = LODs;
+	//	SkeletalMeshContext->LODs = LODs;
 
 		SkeletalMeshContext->SkeletalMesh = CreateSkeletalMeshFromLODs(SkeletalMeshContext);
 	});
